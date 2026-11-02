@@ -20,61 +20,28 @@ function Assert-Condition([string]$testName, [bool]$condition, [string]$detail =
     }
 }
 
-# 1. Verify Win32IoHelper loads successfully on Windows
+# 1. Load utility definitions without starting watcher
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $watchScript = Join-Path $repoRoot "WatchAndUpload.ps1"
-
-# Dot-source with -StatusOnly to load definitions without running watcher
 . $watchScript -StatusOnly | Out-Null
 
-$hasIoHelper = [bool](([System.Management.Automation.PSTypeName]'Win32IoHelper').Type)
-Assert-Condition "Win32IoHelper is loaded and available" $hasIoHelper
+# 2. Test Format-RemainingTime helper
+$fmt45 = Format-RemainingTime 45.0
+Assert-Condition "Seconds remaining format (~45s left)" ($fmt45 -eq "~45s left") "Got: $fmt45"
 
-# 2. Test Real Process IO Counter Tracking
-$tempFile = Join-Path $env:TEMP "gotohp_test_io_progress.dat"
-$fileSize = 5MB
-$dummyData = New-Object byte[] $fileSize
-(New-Object Random).NextBytes($dummyData)
-[System.IO.File]::WriteAllBytes($tempFile, $dummyData)
+$fmt125 = Format-RemainingTime 125.0
+Assert-Condition "Minutes remaining format (~2m 5s left)" ($fmt125 -eq "~2m 5s left") "Got: $fmt125"
 
-try {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "powershell.exe"
-    # Child process reads the file after a short pause
-    $psi.Arguments = "-NoProfile -Command `"Start-Sleep -Milliseconds 400; `$b = [System.IO.File]::ReadAllBytes('$tempFile'); Start-Sleep -Milliseconds 400`""
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
+$fmt3665 = Format-RemainingTime 3665.0
+Assert-Condition "Hours remaining format (~1h 1m left)" ($fmt3665 -eq "~1h 1m left") "Got: $fmt3665"
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $io = New-Object Win32IoHelper+IO_COUNTERS
-    
-    # Capture initial reading
-    Start-Sleep -Milliseconds 150
-    [Win32IoHelper]::GetProcessIoCounters($proc.Handle, [ref]$io) | Out-Null
-    $initialRead = $io.ReadTransferCount
+$fmtZero = Format-RemainingTime 0.0
+Assert-Condition "Zero seconds remaining format (finishing...)" ($fmtZero -eq "finishing...") "Got: $fmtZero"
 
-    # Wait for child process to read the file
-    Start-Sleep -Milliseconds 600
-    [Win32IoHelper]::GetProcessIoCounters($proc.Handle, [ref]$io) | Out-Null
-    $midRead = $io.ReadTransferCount
-
-    $proc.WaitForExit()
-
-    $rawDelta = [double]($midRead - $initialRead)
-    Assert-Condition "IO counters detect child process reading file" ($rawDelta -ge ($fileSize * 0.90)) "Detected bytes: $rawDelta, Expected: >= $($fileSize * 0.90)"
-
-    $uploadedBytes = [Math]::Min([double]$fileSize, [Math]::Max(0.0, $rawDelta))
-    $ratio = [Math]::Min(0.99, [Math]::Max(0.01, $uploadedBytes / $fileSize))
-    Assert-Condition "Progress ratio reflects actual bytes transferred (>90%)" ($ratio -ge 0.90) "Ratio: $ratio"
-} finally {
-    Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
-}
-
-# 3. Test Fallback Estimation: Ensure NO mathematical asymptote at 86.9%
+# 3. Test Adaptive Progression: Ensure NO mathematical asymptote at 86.9%
 # Previously: ratio = elapsedSec / (elapsedSec * 1.15 + 2.0) -> capped at 86.9%
 $estTotalSec = 100.0
 
-# Function simulating the fixed fallback progression
 function Get-FallbackRatio([double]$elapsed, [double]$estTotal) {
     if ($elapsed -lt $estTotal) {
         return [Math]::Min(0.90, [Math]::Max(0.01, ($elapsed / $estTotal) * 0.90))
@@ -84,7 +51,12 @@ function Get-FallbackRatio([double]$elapsed, [double]$estTotal) {
     }
 }
 
-# Test at elapsed times where the old code was strictly stuck at 86.8%:
+$rEarly = Get-FallbackRatio 50.0 $estTotalSec
+Assert-Condition "Progression at 50% elapsed time is 45%" ([Math]::Round($rEarly, 2) -eq 0.45) "Got: $rEarly"
+
+$rAtEst = Get-FallbackRatio 100.0 $estTotalSec
+Assert-Condition "Progression at estimated time is 90%" ([Math]::Round($rAtEst, 2) -eq 0.90) "Got: $rAtEst"
+
 $rOldStuckTime1 = Get-FallbackRatio 150.0 $estTotalSec
 $rOldStuckTime2 = Get-FallbackRatio 500.0 $estTotalSec
 $rOldStuckTime3 = Get-FallbackRatio 811.9 $estTotalSec
@@ -92,9 +64,9 @@ $rOldStuckTime3 = Get-FallbackRatio 811.9 $estTotalSec
 Assert-Condition "Fallback ratio at 150s exceeds 90%" ($rOldStuckTime1 -gt 0.90) "Ratio at 150s: $rOldStuckTime1"
 Assert-Condition "Fallback ratio at 500s exceeds 95%" ($rOldStuckTime2 -gt 0.95) "Ratio at 500s: $rOldStuckTime2"
 Assert-Condition "Fallback ratio at 811.9s exceeds 98% (not stuck at 86.8%)" ($rOldStuckTime3 -gt 0.98) "Ratio at 811.9s: $rOldStuckTime3"
-Assert-Condition "Fallback progression is strictly monotonic" ($rOldStuckTime3 -gt $rOldStuckTime2 -and $rOldStuckTime2 -gt $rOldStuckTime1)
+Assert-Condition "Fallback progression is strictly monotonic" ($rOldStuckTime3 -gt $rOldStuckTime2 -and $rOldStuckTime2 -gt $rOldStuckTime1 -and $rOldStuckTime1 -gt $rAtEst)
 
-# 4. Test Finalizing ETA Display when file read completes
+# 4. Test Finalizing ETA Display when file upload reaches >= 99%
 function Get-EtaDisplay([double]$ratio, [double]$fileBytes, [double]$uploadedBytes, [double]$elapsedSec) {
     if ($ratio -ge 0.99) {
         return ", finalizing..."

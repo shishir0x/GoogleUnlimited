@@ -144,7 +144,7 @@ if ($StopWatcher) {
     Get-CimInstance Win32_Process | Where-Object {
         $_.ProcessId -ne $currentPid -and
         $_.CommandLine -and
-        ($_.CommandLine -like "*WatchAndUpload.ps1*" -or $_.CommandLine -like "*StartPhotosWatcher.vbs*")
+        ($_.CommandLine -like "*WatchAndUpload.ps1*")
     } | ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         Write-Host "[OK] Stopped watcher (PID $($_.ProcessId))" -ForegroundColor Green
@@ -694,29 +694,6 @@ try {
     # -----------------------------------------------------------------
     # 5. UTILITY HELPERS
     # -----------------------------------------------------------------
-    if (-not ([System.Management.Automation.PSTypeName]'Win32IoHelper').Type) {
-        try {
-            Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class Win32IoHelper {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct IO_COUNTERS {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetProcessIoCounters(IntPtr ProcessHandle, out IO_COUNTERS IoCounters);
-}
-"@ -ErrorAction SilentlyContinue
-        } catch {}
-    }
 
     function Format-RemainingTime([double]$sec) {
         $s = [int][Math]::Round($sec)
@@ -1419,17 +1396,6 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
             }
             $estTotalSec = [Math]::Max(3.0, $fileBytes / $estSpeed)
 
-            $hasIoHelper = [bool](([System.Management.Automation.PSTypeName]'Win32IoHelper').Type)
-            $initialRead = 0UL
-            if ($hasIoHelper) {
-                try {
-                    $io = New-Object Win32IoHelper+IO_COUNTERS
-                    if (-not $proc.HasExited -and [Win32IoHelper]::GetProcessIoCounters($proc.Handle, [ref]$io)) {
-                        $initialRead = $io.ReadTransferCount
-                    }
-                } catch {}
-            }
-
             try {
                 while (-not $proc.WaitForExit(150)) {
                     $elapsedSec = $sw.Elapsed.TotalSeconds
@@ -1441,33 +1407,15 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
                         break
                     }
 
-                    $uploadedBytes = 0.0
+                    # Adaptive monotonic progression for smooth, realistic upload tracking without unmanaged code
                     $ratio = 0.0
-
-                    # 1. Primary real-time tracking: Process IO Transfer Counters (Windows NT)
-                    if ($hasIoHelper) {
-                        try {
-                            $io = New-Object Win32IoHelper+IO_COUNTERS
-                            if (-not $proc.HasExited -and [Win32IoHelper]::GetProcessIoCounters($proc.Handle, [ref]$io)) {
-                                $rawDelta = [double]($io.ReadTransferCount - $initialRead)
-                                if ($rawDelta -gt 0 -and $fileBytes -gt 0) {
-                                    $uploadedBytes = [Math]::Min($fileBytes, $rawDelta)
-                                    $ratio = [Math]::Min(0.99, [Math]::Max(0.01, $uploadedBytes / $fileBytes))
-                                }
-                            }
-                        } catch {}
+                    if ($elapsedSec -lt $estTotalSec) {
+                        $ratio = [Math]::Min(0.90, [Math]::Max(0.01, ($elapsedSec / $estTotalSec) * 0.90))
+                    } else {
+                        $overSec = $elapsedSec - $estTotalSec
+                        $ratio = 0.90 + (0.09 * (1.0 - [Math]::Exp(-$overSec / [Math]::Max(30.0, $estTotalSec))))
                     }
-
-                    # 2. Fallback tracking: Adaptive monotonic progression if IO counters unavailable
-                    if ($ratio -le 0.0) {
-                        if ($elapsedSec -lt $estTotalSec) {
-                            $ratio = [Math]::Min(0.90, [Math]::Max(0.01, ($elapsedSec / $estTotalSec) * 0.90))
-                        } else {
-                            $overSec = $elapsedSec - $estTotalSec
-                            $ratio = 0.90 + (0.09 * (1.0 - [Math]::Exp(-$overSec / [Math]::Max(30.0, $estTotalSec))))
-                        }
-                        $uploadedBytes = [Math]::Min($fileBytes * 0.99, $fileBytes * $ratio)
-                    }
+                    $uploadedBytes = [Math]::Min($fileBytes * 0.99, $fileBytes * $ratio)
 
                     $pct = [Math]::Round($ratio * 100.0, 1)
                     $filled = [int][Math]::Floor($ratio * $barWidth)

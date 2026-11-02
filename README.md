@@ -26,13 +26,14 @@
   - [Supported Media Formats](#supported-media-formats-41-formats)
   - [File Readiness & Lock Detection](#file-readiness--lock-detection)
 - [Background Operation](#background-operation)
-  - [Windows (VBScript & Startup Folder)](#windows-background-operation)
+  - [Windows (Native Silent & Startup Shortcut)](#windows-background-operation)
   - [macOS (launchd LaunchAgent)](#macos-background-operation)
   - [Linux (systemd User Service)](#linux-background-operation)
   - [Single-Instance Protection](#single-instance-protection)
 - [Data Storage, Privacy, and Security](#data-storage-privacy-and-security)
 - [Troubleshooting](#troubleshooting)
   - [Video Streaming, Seeking, & Android TV Playback](#7-video-streaming-seeking-and-android-tv-playback)
+  - [Antivirus False Positives & Browser Download Blocks](#8-antivirus-warnings--false-positives-virus-detected--browser-block)
 - [Limitations and Disclaimer](#limitations-and-disclaimer)
 - [Credits and License](#credits-and-license)
 
@@ -63,7 +64,7 @@ The upload engine communicates directly with Google's mobile upload endpoints us
 - **Automatic Retry Queue**:
   - Upload failures are stored in a persistent `retry_queue` table and automatically retried every 30 seconds for up to 3 attempts before logging a permanent failure.
 - **Background Startup Automation**:
-  - **Windows**: One-click startup shortcut creation via VBScript (`StartPhotosWatcher.vbs`) for invisible, zero-console background execution.
+  - **Windows**: Native invisible background execution via PowerShell hidden window style (`GoogleUnlimited.bat silent`) and Windows Startup shortcut automation (`GoogleUnlimited.lnk`). Zero reliance on legacy script hosts.
   - **macOS**: Native user `launchd` LaunchAgent service management.
   - **Linux**: Native `systemd` user service with lingering session support (`loginctl enable-linger`).
 - **Single-Instance Protection**:
@@ -244,7 +245,7 @@ You can also run commands directly from the command prompt or terminal:
 | Batch Command | Underlying PowerShell Flag | Menu Option | Description |
 | :--- | :--- | :---: | :--- |
 | `GoogleUnlimited.bat watch [dirs...]` | `.\WatchAndUpload.ps1 [dirs...]` | `[1]` | Start the live foreground watcher with dynamic progress bars and ETAs. |
-| `GoogleUnlimited.bat silent` | `wscript.exe StartPhotosWatcher.vbs` | `[2]` | Start the background watcher silently (zero console window). |
+| `GoogleUnlimited.bat silent` | `powershell.exe -WindowStyle Hidden -File .\WatchAndUpload.ps1` | `[2]` | Start the background watcher silently (zero console window). |
 | `GoogleUnlimited.bat status` | `.\WatchAndUpload.ps1 -StatusOnly` | `[3]` | View total uploads, pending retries, service state, and last 10 uploads. |
 | `GoogleUnlimited.bat logs` | `.\WatchAndUpload.ps1 -ShowLogs` | `[4]` | Display the last 30 sync activity entries from the database. |
 | `GoogleUnlimited.bat enable` | `.\WatchAndUpload.ps1 -EnableStartup` | `[5]` | Create a shortcut in the Windows Startup folder to run on boot. |
@@ -380,14 +381,14 @@ To prevent corrupt or partial uploads:
 
 ### Windows Background Operation
 
-- **Silent Launch**: Run `GoogleUnlimited.bat silent` or option `[2]`. This invokes `StartPhotosWatcher.vbs`, which launches `WatchAndUpload.ps1` with `-WindowStyle Hidden` via the Windows Script Host (`wscript.exe`), creating no visible console window.
+- **Silent Launch**: Run `GoogleUnlimited.bat silent` or option `[2]`. This launches `WatchAndUpload.ps1` with `-WindowStyle Hidden` natively via PowerShell, creating no visible console window.
 - **Auto-Start on Boot**: Run `GoogleUnlimited.bat enable` or option `[5]`. This creates a Windows shortcut named `GoogleUnlimited.lnk` in your user Startup directory:
   ```text
   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\GoogleUnlimited.lnk
   ```
-  The shortcut points to `StartPhotosWatcher.vbs` in your repository folder.
+  The shortcut points directly to PowerShell executing `WatchAndUpload.ps1` with `-WindowStyle Hidden` in your repository folder.
 - **Disable Auto-Start**: Run `GoogleUnlimited.bat disable` or option `[6]` to delete the shortcut.
-- **Stop Background Process**: Run `GoogleUnlimited.bat stop` or option `[7]`. This terminates any active PowerShell processes running `WatchAndUpload.ps1` or `StartPhotosWatcher.vbs`.
+- **Stop Background Process**: Run `GoogleUnlimited.bat stop` or option `[7]`. This cleanly terminates any active PowerShell processes running `WatchAndUpload.ps1`.
 
 ---
 
@@ -426,7 +427,7 @@ To prevent corrupt or partial uploads:
 
 ### Single-Instance Protection
 
-- **Windows**: `WatchAndUpload.ps1` uses a named Windows Mutex (`Local\GoogleUnlimited_Watcher_<cleanBase>`). If an existing watcher instance is already running for the current directory, subsequent invocations exit immediately with code `0`. Both `GoogleUnlimited.bat silent` and `StartPhotosWatcher.vbs` execute a `-CheckRunning` validation to ensure duplicate processes are never spawned.
+- **Windows**: `WatchAndUpload.ps1` uses a named Windows Mutex (`Local\GoogleUnlimited_Watcher_<cleanBase>`). If an existing watcher instance is already running for the current directory, subsequent invocations exit immediately with code `0`. `GoogleUnlimited.bat silent` executes a `-CheckRunning` validation to ensure duplicate processes are never spawned.
 - **macOS & Linux**: The watcher script writes its active process ID to `.watcher.pid`. The `stop` command inspects `.watcher.pid` and checks process listings (`pgrep`) to cleanly terminate active watchers and listeners without affecting other system tasks.
 
 ---
@@ -538,6 +539,32 @@ CREATE TABLE logs (
     Rclone intercepts the video player's byte-range requests and downloads sparse chunks on demand, synthesizing standard HTTP 206 responses locally so seeking and resuming work seamlessly.
   - **Option B (AList Media Proxy)**: Connect Google Photos as a storage provider in [AList](https://github.com/alist-org/alist) and enable WebDAV streaming with local proxying. AList handles chunked buffering and range requests for players like Nova or Kodi while preserving original media quality and multi-track audio.
   - **Option C (Player-Side Network Caching)**: In Kodi, configure `advancedsettings.xml` with disk/RAM buffering (`<buffermode>1</buffermode>`), or in Nova Video Player enable **Cache to disk** under video player settings to allow local seek within buffered segments.
+
+### 8. Antivirus Warnings & False Positives ("Virus Detected" / Browser Block)
+- **Symptom**: When downloading `GoogleUnlimited-main.zip` from GitHub in Chrome or Edge, the browser displays `GoogleUnlimited-main.zip Failed - Virus detected`, or Windows Defender / third-party antivirus flags a generic heuristic alert (e.g. `Trojan:Win32/Wacatac` or `Trojan.Gen`).
+- **Cause**:
+  1. **Pixel Device API Emulation**: The core upload binary (`gotohp-x64.exe` / `gotohp-cli-x64.exe`) is an open-source Go client ([`xob0t/gotohp`](https://github.com/xob0t/gotohp)) that communicates directly with Google Photos internal mobile upload endpoints, emulating Google Pixel device headers to qualify for unlimited backup storage. Because it is unsigned and spoofs mobile hardware device properties over HTTPS, generic heuristic engines flag it as a false positive.
+  2. **Script Cleanliness**: Legacy releases used a VBScript helper (`StartPhotosWatcher.vbs`) and in-memory P/Invoke kernel32 calls, which triggered script-host behavioral heuristics. These have been completely eliminated from the codebase in favor of clean, native PowerShell automation.
+- **How to Resolve**:
+  - **Option A (Recommended - Git Clone)**: Clone the repository with Git rather than downloading the browser ZIP container. Git downloads source files directly without triggering browser ZIP container false alarms:
+    ```cmd
+    git clone https://github.com/shishir0x/GoogleUnlimited.git
+    cd GoogleUnlimited
+    ```
+  - **Option B (Bypass Browser Block in Chrome / Edge)**:
+    - In Chrome or Edge, press `Ctrl + J` to open the Downloads page.
+    - Locate `GoogleUnlimited-main.zip`, click **Details** (or **...** menu), and select **Keep anyway** / **Keep dangerous file**.
+  - **Option C (Allow in Windows Security / Defender)**:
+    - Open Windows Settings &rarr; **Privacy & security** &rarr; **Windows Security** &rarr; **Virus & threat protection**.
+    - Click **Protection history**.
+    - Select the blocked download/file, click **Actions**, and choose **Allow on device** or **Restore**.
+  - **Verify Binary Integrity**: You can independently verify that all binaries match official release checksums using PowerShell:
+    ```powershell
+    Get-FileHash gotohp-cli-x64.exe -Algorithm SHA256
+    ```
+    - `gotohp-cli-x64.exe`: `C272A285A03AEEA02A909F0B74D36F84C4A29C235C8DEE47F7DE75C83F15D2B1`
+    - `gotohp-x64.exe`: `5C3F757B9E6B2FFD83934B59274136CF4E67C000265E2EAAA4F34DCA6A821088`
+    - `gotohp-cli_amd64`: `945021D5DBC36A96F53121EB4F907ACE39D9457CEA1B43107ED1986441B29030`
 
 ---
 
