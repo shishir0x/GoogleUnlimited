@@ -15,12 +15,15 @@ $testFiles = @(
     "test_permissions.ps1",
     "test_lru_cache.ps1",
     "test_upload_progress.ps1",
-    "test_onedrive_and_reparse.ps1"
+    "test_onedrive_and_reparse.ps1",
+    "test_update_and_sweep.ps1"
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $totalPassed = 0
 $totalFailed = 0
+
+$psExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  GoogleUnlimited - Windows Regression Test Suite"         -ForegroundColor Green
@@ -29,7 +32,7 @@ Write-Host "==========================================================" -Foregro
 foreach ($testName in $testFiles) {
     $testPath = Join-Path $scriptDir $testName
     Write-Host "`n>>> Running: $testName" -ForegroundColor Yellow
-    & pwsh -NoProfile -File $testPath
+    & $psExe -NoProfile -File $testPath
     if ($LASTEXITCODE -eq 0) {
         $totalPassed++
     } else {

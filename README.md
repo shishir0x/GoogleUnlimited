@@ -236,6 +236,7 @@ Running `GoogleUnlimited.bat` without arguments opens the interactive management
   [8] Manage Watched Folders (Add/List custom folders)
   [9] Manage Google Accounts (List/Switch account)
   [10] Force Re-scan & Sync All Media
+  [11] Check / Update Application (Keep configs safe)
   [0] Exit
 ==========================================================
 ```
@@ -254,6 +255,7 @@ You can also run commands directly from the command prompt or terminal:
 | `GoogleUnlimited.bat dirs` | `.\WatchAndUpload.ps1 -ManageDirs` | `[8]` | Open the interactive folder manager or Windows folder browser dialog. |
 | `GoogleUnlimited.bat account` | `gotohp-cli creds` | `[9]` | List configured accounts, switch the active account, or open the GUI. |
 | `GoogleUnlimited.bat resync` | `.\WatchAndUpload.ps1 -ForceResync` | `[10]` | Perform a full scan and force re-sync of all media across watched directories. |
+| `GoogleUnlimited.bat update` | `.\WatchAndUpload.ps1 -UpdateApp` | `[11]` | Check and apply application updates safely while preserving configs & database. |
 
 ---
 
@@ -273,6 +275,7 @@ Running `./google-unlimited.sh` without arguments in an interactive terminal ope
   [6] Disable Auto-Start on Boot
   [7] Stop Background Watcher
   [8] Verify Binary Integrity
+  [9] Check / Update Application (Keep configs safe)
   [0] Exit
 ==========================================================
 ```
@@ -289,6 +292,7 @@ You can execute any command directly from the shell:
 | `./google-unlimited.sh disable` | `[6]` | Disable and remove the auto-start background service. |
 | `./google-unlimited.sh stop` | `[7]` | Stop all active background watcher instances and filesystem listeners. |
 | `./google-unlimited.sh verify` | `[8]` | Verify the cryptographic SHA-256 integrity of the `gotohp-cli` binary. |
+| `./google-unlimited.sh update` | `[9]` | Check and apply application updates safely while preserving configs & database. |
 | `./google-unlimited.sh creds [subcommand]` | — | Manage accounts: `creds add`, `creds list`, `creds set <email>`, `creds remove <email>`. |
 | `./google-unlimited.sh menu` | — | Explicitly open the interactive terminal menu. |
 | `./google-unlimited.sh help` | — | Display command-line usage information. |

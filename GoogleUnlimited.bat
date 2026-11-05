@@ -42,10 +42,11 @@ echo   [7] Stop Background Watcher
 echo   [8] Manage Watched Folders (Add/List custom folders)
 echo   [9] Manage Google Accounts (List/Switch account)
 echo   [10] Force Re-scan ^& Sync All Media
+echo   [11] Check / Update Application (Keep configs safe)
 echo   [0] Exit
 echo ==========================================================
 set "choice="
-set /p "choice=Select an option [1-10, Default: 1]: "
+set /p "choice=Select an option [1-11, Default: 1]: "
 if "%choice%"=="" set "choice=1"
 if "%choice%"=="1" goto run_watcher
 if "%choice%"=="2" goto run_silent
@@ -57,6 +58,7 @@ if "%choice%"=="7" goto stop_watcher
 if "%choice%"=="8" goto manage_folders
 if "%choice%"=="9" goto manage_account
 if "%choice%"=="10" goto force_resync
+if "%choice%"=="11" goto update_app
 if "%choice%"=="0" exit /b 0
 echo Invalid option.
 timeout /t 2 >nul 2>&1 || ping -n 3 127.0.0.1 >nul
@@ -92,8 +94,11 @@ if /i "%arg%"=="9" goto manage_account
 if /i "%arg%"=="resync" goto force_resync
 if /i "%arg%"=="force" goto force_resync
 if /i "%arg%"=="10" goto force_resync
+if /i "%arg%"=="update" goto update_app
+if /i "%arg%"=="upgrade" goto update_app
+if /i "%arg%"=="11" goto update_app
 echo Unknown argument: %arg%
-echo Usage: GoogleUnlimited.bat [watch^|silent^|status^|logs^|enable^|disable^|stop^|dirs^|account^|resync]
+echo Usage: GoogleUnlimited.bat [watch^|silent^|status^|logs^|enable^|disable^|stop^|dirs^|account^|resync^|update]
 exit /b 1
 
 :run_watcher
@@ -232,5 +237,11 @@ goto manage_account
 if "%IS_MENU%"=="1" cls
 echo Starting full scan ^& force re-sync of all media...
 %PS_CMD% -File "%~dp0WatchAndUpload.ps1" -ForceResync
+if "%IS_MENU%"=="1" (pause & goto menu)
+exit /b %ERRORLEVEL%
+
+:update_app
+if "%IS_MENU%"=="1" cls
+%PS_CMD% -File "%~dp0WatchAndUpload.ps1" -UpdateApp
 if "%IS_MENU%"=="1" (pause & goto menu)
 exit /b %ERRORLEVEL%

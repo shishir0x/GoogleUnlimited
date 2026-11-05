@@ -17,7 +17,8 @@ param(
     [string]$AddWatchDir = "",
     [string]$RemoveWatchDir = "",
     [switch]$ResetWatchDirs,
-    [switch]$ListWatchDirs
+    [switch]$ListWatchDirs,
+    [switch]$UpdateApp
 )
 $ErrorActionPreference = "Stop"
 
@@ -62,6 +63,23 @@ if (-not $script:GOTOHP) {
     }
 }
 
+function Get-FileHashSafe([string]$path) {
+    try {
+        if (-not [System.IO.File]::Exists($path)) { return "" }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $bytes = $sha.ComputeHash($stream)
+            return [System.BitConverter]::ToString($bytes).Replace("-", "").ToLower()
+        } finally {
+            $stream.Dispose()
+            $sha.Dispose()
+        }
+    } catch {
+        return ""
+    }
+}
+
 function Assert-BinaryIntegrity([string]$binPath) {
     if (-not [System.IO.File]::Exists($binPath)) { return }
     $trustedHashes = @{
@@ -73,7 +91,7 @@ function Assert-BinaryIntegrity([string]$binPath) {
     $binName = [System.IO.Path]::GetFileName($binPath).ToLower()
     if ($trustedHashes.ContainsKey($binName)) {
         $expected = $trustedHashes[$binName]
-        $actual = (Get-FileHash -LiteralPath $binPath -Algorithm SHA256).Hash.ToLower()
+        $actual = Get-FileHashSafe $binPath
         if ($actual -ne $expected) {
             Write-Host "CRITICAL: Binary integrity verification failed for $binName!" -ForegroundColor Red
             Write-Host "  Expected SHA-256: $expected" -ForegroundColor Red
@@ -110,6 +128,155 @@ $portableConfig = Join-Path $script:BASE "gotohp.config"
 if ([System.IO.File]::Exists($portableConfig)) {
     $script:CONFIG_ARGS = @("--config", $portableConfig)
     Protect-FileAcl $portableConfig
+}
+
+# ---------------------------------------------------------------------
+# 2. APPLICATION UPDATER (SEC-PRESERVE-CONFIGS)
+# ---------------------------------------------------------------------
+function Update-Application {
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "  *  Google Unlimited Photos - Application Updater"        -ForegroundColor Green
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "Target directory: $script:BASE" -ForegroundColor Gray
+
+    # 1. Protect and back up user configuration files
+    $backupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("gotohp_update_backup_" + [System.Guid]::NewGuid().ToString("N"))
+    [System.IO.Directory]::CreateDirectory($backupDir) | Out-Null
+    Write-Host "[1/3] Backing up local configuration and database..." -ForegroundColor Yellow
+
+    $protectedFiles = @("gotohp.config", "watch_dirs.txt", "gphotos.db", "gphotos.db-wal", "gphotos.db-shm", ".env")
+    $backedUpCount = 0
+    foreach ($fn in $protectedFiles) {
+        $sourcePath = Join-Path $script:BASE $fn
+        if ([System.IO.File]::Exists($sourcePath)) {
+            $destPath = Join-Path $backupDir $fn
+            [System.IO.File]::Copy($sourcePath, $destPath, $true)
+            $backedUpCount++
+        }
+    }
+    Write-Host "      [OK] Backed up $backedUpCount configuration/database file(s) to temp safe storage." -ForegroundColor Green
+
+    # 2. Check update method: Git repository vs direct archive
+    $gitDir = Join-Path $script:BASE ".git"
+    $hasGit = (Test-Path $gitDir) -and (Get-Command git -ErrorAction SilentlyContinue)
+
+    $updateSucceeded = $false
+
+    if ($hasGit) {
+        Write-Host "[2/3] Checking for updates via Git..." -ForegroundColor Yellow
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $stashed = $false
+        try {
+            Push-Location $script:BASE
+            $currentBranch = ((& git rev-parse --abbrev-ref HEAD 2>$null) | Out-String).Trim()
+            if (-not $currentBranch -or $currentBranch -eq "HEAD") { $currentBranch = "main" }
+
+            # Stash any local uncommitted script modifications
+            $stashOutput = ((& git stash 2>$null) | Out-String)
+            if ($stashOutput -match "Saved working directory") {
+                $stashed = $true
+            }
+
+            $null = (& git fetch origin $currentBranch 2>$null)
+            
+            $localRev = ((& git rev-parse HEAD 2>$null) | Out-String).Trim()
+            $remoteRev = ((& git rev-parse "origin/$currentBranch" 2>$null) | Out-String).Trim()
+
+            if ($localRev -and $remoteRev -and ($localRev -eq $remoteRev)) {
+                $shortRev = if ($localRev.Length -ge 7) { $localRev.Substring(0, 7) } else { $localRev }
+                Write-Host "      [OK] Application is already up-to-date! Current commit: $shortRev" -ForegroundColor Green
+                $updateSucceeded = $true
+            } else {
+                $shortLocal = if ($localRev.Length -ge 7) { $localRev.Substring(0, 7) } else { $localRev }
+                $shortRemote = if ($remoteRev.Length -ge 7) { $remoteRev.Substring(0, 7) } else { $remoteRev }
+                Write-Host "      New version found! Updating branch $currentBranch from $shortLocal to $shortRemote..." -ForegroundColor Cyan
+                $pullOutput = ((& git pull --ff-only origin $currentBranch 2>$null) | Out-String)
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "      Fast-forward failed, attempting rebase..." -ForegroundColor Yellow
+                    $pullOutput = ((& git pull --rebase origin $currentBranch 2>$null) | Out-String)
+                }
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "      [OK] Git update completed successfully!" -ForegroundColor Green
+                    $updateSucceeded = $true
+                } else {
+                    Write-Host "      [!] Git pull encountered conflicts: $pullOutput" -ForegroundColor Red
+                }
+            }
+        } catch {
+            Write-Host "      [!] Git update error: $_" -ForegroundColor Red
+        } finally {
+            if ($stashed) {
+                & git stash pop 2>$null | Out-Null
+            }
+            if ((Get-Location).Path -ne $script:BASE) { Pop-Location }
+            $ErrorActionPreference = $prevEap
+        }
+    }
+
+    if (-not $updateSucceeded -and -not $hasGit) {
+        Write-Host "[2/3] Standalone mode (non-git). Fetching latest scripts from GitHub..." -ForegroundColor Yellow
+        $scriptFiles = @("WatchAndUpload.ps1", "GoogleUnlimited.bat", "google-unlimited.sh", "StartPhotosWatcher.vbs")
+        $baseUrl = "https://raw.githubusercontent.com/shishir0x/GoogleUnlimited/main"
+        
+        $downloadSuccess = $true
+        foreach ($sfile in $scriptFiles) {
+            $url = "$baseUrl/$sfile"
+            $tempFile = Join-Path $script:BASE "$sfile.new"
+            $targetFile = Join-Path $script:BASE $sfile
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $tempFile -UseBasicParsing -TimeoutSec 15
+                if ((Get-Item $tempFile).Length -gt 100) {
+                    Move-Item -LiteralPath $tempFile -Destination $targetFile -Force
+                    Write-Host "      [OK] Updated $sfile" -ForegroundColor Green
+                } else {
+                    Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+                    $downloadSuccess = $false
+                }
+            } catch {
+                Write-Host "      [!] Could not update $sfile - $_" -ForegroundColor DarkYellow
+                $downloadSuccess = $false
+                if (Test-Path $tempFile) { Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        if ($downloadSuccess) {
+            $updateSucceeded = $true
+        }
+    }
+
+    # 3. Safeguard and verify configuration files
+    Write-Host "[3/3] Verifying configuration files and database..." -ForegroundColor Yellow
+    foreach ($fn in $protectedFiles) {
+        $sourceBackup = Join-Path $backupDir $fn
+        $targetFile = Join-Path $script:BASE $fn
+        if ([System.IO.File]::Exists($sourceBackup)) {
+            if (-not [System.IO.File]::Exists($targetFile)) {
+                [System.IO.File]::Copy($sourceBackup, $targetFile, $true)
+                Write-Host "      [RESTORED] Restored $fn from pre-update backup." -ForegroundColor Green
+            }
+            Protect-FileAcl $targetFile
+        }
+    }
+
+    try {
+        [System.IO.Directory]::Delete($backupDir, $true)
+    } catch {}
+
+    Write-Host ""
+    if ($updateSucceeded) {
+        Write-Host "==========================================================" -ForegroundColor Cyan
+        Write-Host "  *  Application is ready to run with latest updates!"       -ForegroundColor Green
+        Write-Host "     Configuration & upload history database preserved."   -ForegroundColor Green
+        Write-Host "==========================================================" -ForegroundColor Cyan
+    } else {
+        Write-Host "[WARN] Update could not complete automatically. Your configurations remain intact." -ForegroundColor Yellow
+    }
+}
+
+if ($UpdateApp) {
+    Update-Application
+    exit 0
 }
 
 # ---------------------------------------------------------------------
@@ -621,7 +788,7 @@ $script:instanceMutex = $null
 $script:hasInstanceMutex = $false
 
 # Diagnostic/management commands do not start background work and should not be blocked
-if (-not ($StatusOnly -or $ShowLogs -or $CheckRunning -or $ManageDirs -or $AddWatchDir -or $RemoveWatchDir -or $ResetWatchDirs -or $ListWatchDirs)) {
+if (-not ($StatusOnly -or $ShowLogs -or $CheckRunning -or $ManageDirs -or $AddWatchDir -or $RemoveWatchDir -or $ResetWatchDirs -or $ListWatchDirs -or $UpdateApp)) {
     $cleanBase = $script:BASE.ToLower().Replace("\", "_").Replace(":", "").Replace(" ", "_")
     $script:instanceMutexName = "Local\GoogleUnlimited_Watcher_" + $cleanBase
 
@@ -658,6 +825,7 @@ try {
     $script:MAX_RETRY = 3       # Max retry attempts per file
     $script:LOG_RETENTION_DAYS = 30
     $script:lastUploadSpeed = 2MB  # Adaptive baseline for smooth, realistic progress tracking
+    $script:SWEEP_INTERVAL_SECS = 900  # 15 minutes safety sweep (prevents disk/CPU thrashing, matches Unix daemon)
     $script:currentUploadProc = $null
 
     # Supported media extensions (photos, camera RAWs, and videos)
@@ -1695,6 +1863,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
                     (-not $_.Directory -or -not (Test-IsSymlinkOrJunction $_.Directory))
                 } |
                 Where-Object { Test-IsEligibleMedia $_ } |
+                Where-Object { $ForceResync -or (-not (Test-IsDuplicateUpload $_.FullName)) } |
                 ForEach-Object { $unrecorded.Add($_) }
         } catch {
             Write-Log "Scan error in $dir - $_" "WARN"
@@ -1843,10 +2012,11 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
             }
         }
 
-        # Recursive filesystem safety sweep every 30 seconds
-        if (($now - $lastSweep).TotalSeconds -ge 30) {
+        # Recursive filesystem safety sweep every 15 minutes ($script:SWEEP_INTERVAL_SECS seconds)
+        if (($now - $lastSweep).TotalSeconds -ge $script:SWEEP_INTERVAL_SECS) {
             $lastSweep = $now
             foreach ($dir in $script:WATCH_DIRS) {
+                if (-not [System.IO.Directory]::Exists($dir)) { continue }
                 try {
                     Get-ChildItem -LiteralPath $dir -File -Recurse -ErrorAction SilentlyContinue |
                         Where-Object {
@@ -1854,6 +2024,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
                             (-not $_.Directory -or -not (Test-IsSymlinkOrJunction $_.Directory))
                         } |
                         Where-Object { Test-IsEligibleMedia $_ } |
+                        Where-Object { -not (Test-IsDuplicateUpload $_.FullName) } |
                         ForEach-Object {
                             Write-Log "Sweep detected new file: $($_.Name)" "INFO"
                             Invoke-Upload $_.FullName 1 1
@@ -1862,6 +2033,8 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
                     Write-Log "Sweep error in $dir - $_" "WARN"
                 }
             }
+            # Clean up memory in long-running background sessions
+            [System.GC]::Collect()
         }
     }
 } finally {
@@ -1897,7 +2070,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
         $script:instanceMutex = $null
     }
 
-    if (-not ($StatusOnly -or $ShowLogs -or $CheckRunning -or $ManageDirs -or $AddWatchDir -or $RemoveWatchDir -or $ResetWatchDirs -or $ListWatchDirs -or $EnableStartup -or $DisableStartup -or $StopWatcher)) {
+    if (-not ($StatusOnly -or $ShowLogs -or $CheckRunning -or $ManageDirs -or $AddWatchDir -or $RemoveWatchDir -or $ResetWatchDirs -or $ListWatchDirs -or $EnableStartup -or $DisableStartup -or $StopWatcher -or $UpdateApp)) {
         Write-Host ""
         Write-Host "Watcher stopped. Database: $script:DB" -ForegroundColor Red
         if (Get-Command -Name Invoke-SqliteQuery -ErrorAction SilentlyContinue) {
