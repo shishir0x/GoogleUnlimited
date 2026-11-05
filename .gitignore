@@ -12,6 +12,7 @@ gotohp.config
 *.config
 *.key
 *.token
+.
 
 # Logs & Temporary Files
 *.log
@@ -24,3 +25,6 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+# IDE Settings
+.vscode/

@@ -1607,6 +1607,108 @@ do_creds() {
 }
 
 # ---------------------------------------------------------------------
+# APPLICATION UPDATER (SEC-PRESERVE-CONFIGS)
+# ---------------------------------------------------------------------
+do_update() {
+    echo -e "${CYAN}==========================================================${NC}"
+    echo -e "${GREEN}  *  GoogleUnlimited - Application Updater ($OS)${NC}"
+    echo -e "${CYAN}==========================================================${NC}"
+    echo -e "Target directory: ${GRAY}$SCRIPT_DIR${NC}"
+
+    # 1. Protect and back up user configuration files
+    local backup_dir
+    backup_dir="$(mktemp -d 2>/dev/null || mktemp -d -t 'gotohp_backup')"
+    echo -e "${YELLOW}[1/3] Backing up local configuration and database...${NC}"
+
+    local protected_files=("gotohp.config" "watch_dirs.txt" "gphotos.db" "gphotos.db-wal" "gphotos.db-shm" ".env")
+    local backed_up=0
+    for fn in "${protected_files[@]}"; do
+        if [ -f "$SCRIPT_DIR/$fn" ]; then
+            cp -p "$SCRIPT_DIR/$fn" "$backup_dir/$fn" 2>/dev/null || cp "$SCRIPT_DIR/$fn" "$backup_dir/$fn"
+            ((backed_up++))
+        fi
+    done
+    echo -e "${GREEN}      [OK] Backed up $backed_up configuration/database file(s) to safe temp storage.${NC}"
+
+    # 2. Update via Git if available, or direct raw download
+    local update_succeeded=0
+    if [ -d "$SCRIPT_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+        echo -e "${YELLOW}[2/3] Checking for updates via Git...${NC}"
+        cd "$SCRIPT_DIR" || exit 1
+        local stash_out
+        stash_out=$(git stash 2>&1 || true)
+        local current_branch
+        current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+        [ -z "$current_branch" ] || [ "$current_branch" = "HEAD" ] && current_branch="main"
+
+        git fetch origin "$current_branch" 2>/dev/null || true
+        
+        local local_rev remote_rev
+        local_rev=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        remote_rev=$(git rev-parse "origin/$current_branch" 2>/dev/null || echo "unknown")
+
+        if [ "$local_rev" != "unknown" ] && [ "$local_rev" = "$remote_rev" ]; then
+            echo -e "${GREEN}      [OK] Application is already up-to-date! Current commit: ${local_rev:0:7}${NC}"
+            update_succeeded=1
+        else
+            echo -e "${CYAN}      New version found! Updating branch $current_branch from ${local_rev:0:7} to ${remote_rev:0:7}...${NC}"
+            if git pull --ff-only origin "$current_branch" 2>/dev/null || git pull --rebase origin "$current_branch" 2>/dev/null; then
+                echo -e "${GREEN}      [OK] Git update completed successfully!${NC}"
+                update_succeeded=1
+            else
+                echo -e "${RED}      [!] Git pull encountered an issue. Check repository status.${NC}"
+            fi
+        fi
+        if [[ "$stash_out" =~ "Saved working directory" ]]; then
+            git stash pop 2>/dev/null || true
+        fi
+    else
+        echo -e "${YELLOW}[2/3] Standalone mode. Fetching latest scripts from GitHub...${NC}"
+        local script_files=("google-unlimited.sh" "WatchAndUpload.ps1" "GoogleUnlimited.bat" "StartPhotosWatcher.vbs")
+        local base_url="https://raw.githubusercontent.com/shishir0x/GoogleUnlimited/main"
+        local dl_success=1
+        for sf in "${script_files[@]}"; do
+            if command -v curl >/dev/null 2>&1; then
+                if curl -fsSL "$base_url/$sf" -o "$SCRIPT_DIR/$sf.new"; then
+                    mv "$SCRIPT_DIR/$sf.new" "$SCRIPT_DIR/$sf"
+                    echo -e "${GREEN}      [OK] Updated $sf${NC}"
+                else
+                    rm -f "$SCRIPT_DIR/$sf.new" 2>/dev/null || true
+                    dl_success=0
+                fi
+            fi
+        done
+        if [ "$dl_success" -eq 1 ]; then
+            update_succeeded=1
+        fi
+    fi
+
+    # 3. Ensure permissions and restore configs if necessary
+    echo -e "${YELLOW}[3/3] Verifying configuration files and permissions...${NC}"
+    for fn in "${protected_files[@]}"; do
+        if [ -f "$backup_dir/$fn" ] && [ ! -f "$SCRIPT_DIR/$fn" ]; then
+            cp "$backup_dir/$fn" "$SCRIPT_DIR/$fn"
+            echo -e "${GREEN}      [RESTORED] Restored $fn from pre-update backup.${NC}"
+        fi
+    done
+    rm -rf "$backup_dir" 2>/dev/null || true
+
+    chmod +x "$SCRIPT_DIR/google-unlimited.sh" 2>/dev/null || true
+    [ -f "$SCRIPT_DIR/gotohp.config" ] && chmod 600 "$SCRIPT_DIR/gotohp.config" 2>/dev/null || true
+    [ -f "$SCRIPT_DIR/gphotos.db" ] && chmod 600 "$SCRIPT_DIR/gphotos.db" 2>/dev/null || true
+
+    echo ""
+    if [ "$update_succeeded" -eq 1 ]; then
+        echo -e "${CYAN}==========================================================${NC}"
+        echo -e "${GREEN}  *  Application is updated and ready to run!${NC}"
+        echo -e "${GREEN}     Configurations and upload history database preserved.${NC}"
+        echo -e "${CYAN}==========================================================${NC}"
+    else
+        echo -e "${YELLOW}[WARN] Update could not complete automatically. Your configurations remain intact.${NC}"
+    fi
+}
+
+# ---------------------------------------------------------------------
 # INTERACTIVE TERMINAL MENU
 # ---------------------------------------------------------------------
 show_menu() {
@@ -1626,9 +1728,10 @@ show_menu() {
     echo "  [6] Disable Auto-Start on Boot"
     echo "  [7] Stop Background Watcher"
     echo "  [8] Verify Binary Integrity"
+    echo "  [9] Check / Update Application (Keep configs safe)"
     echo "  [0] Exit"
     echo -e "${CYAN}==========================================================${NC}"
-    read -rp "Select an option [0-8, Default: 1]: " choice
+    read -rp "Select an option [0-9, Default: 1]: " choice
     choice="${choice:-1}"
 
     case "$choice" in
@@ -1640,6 +1743,7 @@ show_menu() {
         6) do_disable_startup ;;
         7) do_stop ;;
         8) do_verify ;;
+        9) do_update ;;
         0) exit 0 ;;
         *) echo "Invalid option"; sleep 1; show_menu ;;
     esac
@@ -1658,6 +1762,7 @@ show_help() {
     echo "  stop              Stop running background watcher instances"
     echo "  verify            Verify gotohp-cli binary integrity using trusted SHA-256"
     echo "  creds             Manage credentials securely (creds add / creds list)"
+    echo "  update            Check and update application safely (preserves configs)"
     echo "  menu              Open interactive terminal menu"
     echo "  help              Show this help message"
 }
@@ -1696,6 +1801,9 @@ case "$CMD" in
     creds)
         shift
         do_creds "$@"
+        ;;
+    update|--update|upgrade|--upgrade)
+        do_update
         ;;
     menu|--menu)
         show_menu
