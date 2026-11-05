@@ -217,7 +217,7 @@ function Update-Application {
 
     if (-not $updateSucceeded -and -not $hasGit) {
         Write-Host "[2/3] Standalone mode (non-git). Fetching latest scripts from GitHub..." -ForegroundColor Yellow
-        $scriptFiles = @("WatchAndUpload.ps1", "GoogleUnlimited.bat", "google-unlimited.sh", "StartPhotosWatcher.vbs")
+        $scriptFiles = @("WatchAndUpload.ps1", "GoogleUnlimited.bat", "google-unlimited.sh")
         $baseUrl = "https://raw.githubusercontent.com/shishir0x/GoogleUnlimited/main"
         
         $downloadSuccess = $true

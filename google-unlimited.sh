@@ -1664,7 +1664,7 @@ do_update() {
         fi
     else
         echo -e "${YELLOW}[2/3] Standalone mode. Fetching latest scripts from GitHub...${NC}"
-        local script_files=("google-unlimited.sh" "WatchAndUpload.ps1" "GoogleUnlimited.bat" "StartPhotosWatcher.vbs")
+        local script_files=("google-unlimited.sh" "WatchAndUpload.ps1" "GoogleUnlimited.bat")
         local base_url="https://raw.githubusercontent.com/shishir0x/GoogleUnlimited/main"
         local dl_success=1
         for sf in "${script_files[@]}"; do
