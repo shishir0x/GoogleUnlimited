@@ -99,6 +99,17 @@ Assert-Condition "google-unlimited.sh defines do_update() function" $hasShUpdate
 $hasShDispatch = $shContent -match 'update\|--update\|upgrade\|--upgrade\)'
 Assert-Condition "google-unlimited.sh CLI dispatcher accepts 'update' command" $hasShDispatch
 
+# ---------------------------------------------------------------------
+# Test Set 3: Issue #13 Subfolder Event Detection During Live Watch
+# ---------------------------------------------------------------------
+Write-Host "`nTest Set 3: Issue #13 Subfolder Event Detection During Live Watch" -ForegroundColor Yellow
+
+$hasSubfolderWatchPs1 = $scriptContent -match 'Get-ChildItem -LiteralPath \$evPath -File -Recurse'
+Assert-Condition "Process-WatchEvent recursively scans subfolder additions in WatchAndUpload.ps1" $hasSubfolderWatchPs1
+
+$hasSubfolderWatchSh = $shContent -match 'find "\$fpath" -type f -print0'
+Assert-Condition "invoke_upload recursively discovers subfolder files in google-unlimited.sh" $hasSubfolderWatchSh
+
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 Write-Host "  RESULTS: $passed Passed, $failed Failed" -ForegroundColor $(if ($failed -eq 0) { "Green" } else { "Red" })
 Write-Host "==========================================================" -ForegroundColor Cyan

@@ -1904,7 +1904,23 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
 
     function Process-WatchEvent([string]$evPath) {
         if (-not $evPath) { return }
-        if ([System.IO.Directory]::Exists($evPath)) { return }
+        if ([System.IO.Directory]::Exists($evPath)) {
+            # Subfolder added or moved into watched directory (Issue #13)
+            try {
+                Get-ChildItem -LiteralPath $evPath -File -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        -not (Test-IsSymlinkOrJunction $_) -and
+                        (-not $_.Directory -or -not (Test-IsSymlinkOrJunction $_.Directory))
+                    } |
+                    Where-Object { Test-IsEligibleMedia $_ } |
+                    ForEach-Object {
+                        Process-WatchEvent $_.FullName
+                    }
+            } catch {
+                Write-Log "Error scanning added subfolder $evPath - $_" "WARN"
+            }
+            return
+        }
 
         $ext = [System.IO.Path]::GetExtension($evPath).ToLower()
         if (-not $script:EXT.Contains($ext)) { return }

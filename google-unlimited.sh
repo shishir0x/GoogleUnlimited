@@ -1078,7 +1078,13 @@ wait_for_file_ready() {
 
 invoke_upload() {
     local fpath="$1"
-    [ -d "$fpath" ] && return
+    if [ -d "$fpath" ]; then
+        # Subfolder added or moved into watched directory (Issue #13)
+        while IFS= read -r -d '' sub_file; do
+            invoke_upload "$sub_file"
+        done < <(find "$fpath" -type f -print0 2>/dev/null)
+        return
+    fi
     # Security: Skip symbolic links to prevent arbitrary file traversal
     [ -L "$fpath" ] && return
     [ ! -f "$fpath" ] && return
