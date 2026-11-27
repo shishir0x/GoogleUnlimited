@@ -146,16 +146,15 @@ get_process_io_read() {
     local total=0
     for p in "${pids[@]}"; do
         if [ -r "/proc/$p/io" ]; then
-            local r
-            r=$(awk '/^read_bytes:/ {print $2}' "/proc/$p/io" 2>/dev/null || true)
-            if [ -n "$r" ] && [ "$r" -gt 0 ]; then
+            local r rc
+            r=$(awk '/^read_bytes:/ {print $2}' "/proc/$p/io" 2>/dev/null || echo 0)
+            rc=$(awk '/^rchar:/ {print $2}' "/proc/$p/io" 2>/dev/null || echo 0)
+            r="${r:-0}"
+            rc="${rc:-0}"
+            if [ "$rc" -gt "$r" ]; then
+                total=$((total + rc))
+            elif [ "$r" -gt 0 ]; then
                 total=$((total + r))
-            else
-                local rc
-                rc=$(awk '/^rchar:/ {print $2}' "/proc/$p/io" 2>/dev/null || true)
-                if [ -n "$rc" ] && [ "$rc" -gt 0 ]; then
-                    total=$((total + rc))
-                fi
             fi
         fi
     done
