@@ -256,7 +256,13 @@ get_gotohp_bin() {
     if [ "$OS" = "Darwin" ]; then
         cands+=("$SCRIPT_DIR/gotohp-cli-macos-universal" "$SCRIPT_DIR/gotohp-cli-macos")
     else
-        cands+=("$SCRIPT_DIR/gotohp-cli_amd64" "$SCRIPT_DIR/gotohp-cli_arm64")
+        local arch
+        arch="$(uname -m)"
+        if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+            cands+=("$SCRIPT_DIR/gotohp-cli_arm64")
+        else
+            cands+=("$SCRIPT_DIR/gotohp-cli_amd64")
+        fi
     fi
 
     for cand in "${cands[@]}"; do
@@ -267,9 +273,22 @@ get_gotohp_bin() {
         fi
     done
 
-    # Fallback to any other gotohp-cli binary in SCRIPT_DIR
+    # Fallback to compatible gotohp-cli binary in SCRIPT_DIR (skipping mismatched arch)
+    local arch_now=""
+    [ "$OS" != "Darwin" ] && arch_now="$(uname -m)"
     for cand in "$SCRIPT_DIR"/gotohp-cli*; do
         if [ -s "$cand" ] && [ "$cand" != "$SCRIPT_DIR/gotohp.config" ]; then
+            case "$cand" in
+                *.dl|*.new|*.exe) continue ;;
+                *_amd64)
+                    if [ "$arch_now" = "aarch64" ] || [ "$arch_now" = "arm64" ]; then
+                        continue
+                    fi ;;
+                *_arm64)
+                    if [ "$arch_now" != "aarch64" ] && [ "$arch_now" != "arm64" ]; then
+                        continue
+                    fi ;;
+            esac
             chmod +x "$cand" 2>/dev/null || true
             echo "$cand"
             return 0
@@ -618,33 +637,75 @@ do_setup() {
 
         local arch
         arch="$(uname -m)"
-        local target_bin="$SCRIPT_DIR/gotohp-cli_amd64"
-        local dl_url="https://github.com/xob0t/gotohp/releases/download/v0.11.0/gotohp-cli_amd64"
         if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
-            target_bin="$SCRIPT_DIR/gotohp-cli_arm64"
-            dl_url="https://github.com/xob0t/gotohp/releases/download/v0.11.0/gotohp-cli_arm64"
-        fi
+            local target_bin="$SCRIPT_DIR/gotohp-cli_arm64"
+            if [ ! -s "$target_bin" ]; then
+                echo -e "${YELLOW}[Setup] Upstream gotohp v0.11.0 does not publish a prebuilt Linux ARM64 binary.${NC}"
+                echo -e "${YELLOW}[Setup] Building gotohp-cli_arm64 from source (xob0t/gotohp v0.11.0)...${NC}"
+                local build_deps=()
+                command -v go >/dev/null 2>&1 || build_deps+=("golang")
+                command -v git >/dev/null 2>&1 || build_deps+=("git")
+                if [ ${#build_deps[@]} -gt 0 ]; then
+                    echo -e "${YELLOW}[Setup] Installing build dependencies: ${build_deps[*]}...${NC}"
+                    if command -v apt-get >/dev/null 2>&1; then
+                        sudo apt-get update && sudo apt-get install -y "${build_deps[@]}"
+                    elif command -v dnf >/dev/null 2>&1; then
+                        sudo dnf install -y "${build_deps[@]}"
+                    elif command -v pacman >/dev/null 2>&1; then
+                        sudo pacman -Sy --noconfirm "${build_deps[@]}"
+                    elif command -v zypper >/dev/null 2>&1; then
+                        sudo zypper install -y "${build_deps[@]}"
+                    fi
+                fi
 
-        if [ ! -s "$target_bin" ]; then
-            echo -e "${YELLOW}[Setup] Downloading gotohp-cli for Linux ($arch)...${NC}"
-            local tmp_bin="$target_bin.dl"
-            rm -f "$tmp_bin"
-            if curl -fSL "$dl_url" -o "$tmp_bin"; then
-                if verify_binary "$tmp_bin"; then
-                    mv "$tmp_bin" "$target_bin"
+                if command -v go >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+                    local src_tmp
+                    src_tmp="$(mktemp -d 2>/dev/null || mktemp -d -t 'gotohp_src')"
+                    local tmp_bin="$target_bin.dl"
+                    rm -f "$tmp_bin"
+                    if git clone --branch v0.11.0 --depth 1 https://github.com/xob0t/gotohp.git "$src_tmp" && \
+                       (cd "$src_tmp" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags cli -trimpath -buildvcs=false -ldflags="-w -s" -o "$tmp_bin" .); then
+                        mv "$tmp_bin" "$target_bin"
+                        echo -e "${GREEN}[OK] Built $target_bin successfully.${NC}"
+                    else
+                        echo -e "${RED}[ERROR] Failed to build gotohp-cli_arm64 from source.${NC}" >&2
+                        rm -f "$tmp_bin"
+                    fi
+                    rm -rf "$src_tmp" 2>/dev/null || true
                 else
-                    echo -e "${RED}[SECURITY ERROR] Downloaded Linux binary failed integrity verification! Removing.${NC}" >&2
+                    echo -e "${RED}[ERROR] 'go' and 'git' are required to build gotohp-cli for Linux ($arch).${NC}" >&2
+                fi
+            else
+                echo -e "${GREEN}[OK] Found existing ARM64 binary: $target_bin${NC}"
+            fi
+            if [ -s "$target_bin" ]; then
+                chmod 700 "$target_bin" 2>/dev/null || true
+            fi
+        else
+            local target_bin="$SCRIPT_DIR/gotohp-cli_amd64"
+            local dl_url="https://github.com/xob0t/gotohp/releases/download/v0.11.0/gotohp-cli_amd64"
+
+            if [ ! -s "$target_bin" ]; then
+                echo -e "${YELLOW}[Setup] Downloading gotohp-cli for Linux ($arch)...${NC}"
+                local tmp_bin="$target_bin.dl"
+                rm -f "$tmp_bin"
+                if curl -fSL "$dl_url" -o "$tmp_bin"; then
+                    if verify_binary "$tmp_bin"; then
+                        mv "$tmp_bin" "$target_bin"
+                    else
+                        echo -e "${RED}[SECURITY ERROR] Downloaded Linux binary failed integrity verification! Removing.${NC}" >&2
+                        rm -f "$tmp_bin"
+                    fi
+                else
+                    echo -e "${RED}[ERROR] Failed to download gotohp-cli binary.${NC}" >&2
                     rm -f "$tmp_bin"
                 fi
             else
-                echo -e "${RED}[ERROR] Failed to download gotohp-cli binary.${NC}" >&2
-                rm -f "$tmp_bin"
+                verify_binary "$target_bin" || true
             fi
-        else
-            verify_binary "$target_bin" || true
-        fi
-        if [ -s "$target_bin" ]; then
-            chmod 700 "$target_bin" 2>/dev/null || true
+            if [ -s "$target_bin" ]; then
+                chmod 700 "$target_bin" 2>/dev/null || true
+            fi
         fi
     fi
 
@@ -1169,7 +1230,12 @@ EOF
     local start_time
     start_time=$(date +%s)
 
-    run_gotohp upload --no-tui "$fpath" > "$out_tmp" 2>&1 &
+    local extra_upload_args=()
+    if [ -n "${ALBUM_NAME:-}" ]; then
+        extra_upload_args+=(--album "$ALBUM_NAME")
+    fi
+
+    run_gotohp upload --no-tui "${extra_upload_args[@]+"${extra_upload_args[@]}"}" "$fpath" > "$out_tmp" 2>&1 &
     local upload_pid=$!
     CURRENT_UPLOAD_PID="$upload_pid"
 
@@ -1403,14 +1469,29 @@ do_watch() {
         fi
     fi
 
-    # Discover watched folders
+    # Discover watched folders & optional --album flag
     local watch_dirs=()
+    ALBUM_NAME="${ALBUM_NAME:-}"
 
-    # 1. Custom directories passed via CLI arguments
-    for custom_arg in "$@"; do
-        if [ -d "$custom_arg" ]; then
-            watch_dirs+=("$(cd "$custom_arg" && pwd)")
-        fi
+    # 1. Custom directories and options passed via CLI arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --album|-a)
+                shift
+                if [ $# -gt 0 ]; then
+                    ALBUM_NAME="$1"
+                fi
+                ;;
+            --album=*)
+                ALBUM_NAME="${1#--album=}"
+                ;;
+            *)
+                if [ -d "$1" ]; then
+                    watch_dirs+=("$(cd "$1" && pwd)")
+                fi
+                ;;
+        esac
+        shift || true
     done
 
     # 2. Watch directory discovery

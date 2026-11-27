@@ -18,7 +18,8 @@ param(
     [string]$RemoveWatchDir = "",
     [switch]$ResetWatchDirs,
     [switch]$ListWatchDirs,
-    [switch]$UpdateApp
+    [switch]$UpdateApp,
+    [string]$Album = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -1519,6 +1520,9 @@ CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
             }
             if ($ForceResync) {
                 $uploadArgs += @("--force")
+            }
+            if ($Album) {
+                $uploadArgs += @("--album", $Album)
             }
             $uploadArgs += @($path)
 

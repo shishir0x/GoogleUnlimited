@@ -110,6 +110,26 @@ Assert-Condition "Process-WatchEvent recursively scans subfolder additions in Wa
 $hasSubfolderWatchSh = $shContent -match 'find "\$fpath" -type f -print0'
 Assert-Condition "invoke_upload recursively discovers subfolder files in google-unlimited.sh" $hasSubfolderWatchSh
 
+# ---------------------------------------------------------------------
+# Test Set 4: Issue #16 ARM64/aarch64 Support & Issue #12/#15 Album Flag
+# ---------------------------------------------------------------------
+Write-Host "`nTest Set 4: Issue #16 ARM64 Build/Selection & Issue #12/#15 Album Flag" -ForegroundColor Yellow
+
+$hasArm64Skip = $shContent -match '\*_amd64\)'
+Assert-Condition "google-unlimited.sh get_gotohp_bin skips mismatched amd64 binary on aarch64" $hasArm64Skip
+
+$hasArm64Build = $shContent -match 'GOARCH=arm64 go build -tags cli'
+Assert-Condition "google-unlimited.sh do_setup builds gotohp-cli_arm64 from source on aarch64" $hasArm64Build
+
+$hasPsAlbumParam = $scriptContent -match '\[string\]\$Album\s*=\s*""'
+Assert-Condition "WatchAndUpload.ps1 exposes -Album parameter" $hasPsAlbumParam
+
+$hasPsAlbumArg = $scriptContent -match '@\("--album",\s*\$Album\)'
+Assert-Condition "WatchAndUpload.ps1 forwards --album flag to gotohp-cli" $hasPsAlbumArg
+
+$hasShAlbum = $shContent -match '--album\|-a\)'
+Assert-Condition "google-unlimited.sh supports --album/-a flag" $hasShAlbum
+
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 Write-Host "  RESULTS: $passed Passed, $failed Failed" -ForegroundColor $(if ($failed -eq 0) { "Green" } else { "Red" })
 Write-Host "==========================================================" -ForegroundColor Cyan
